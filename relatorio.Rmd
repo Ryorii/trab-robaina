@@ -1,8 +1,74 @@
 ---
-title: "relatorio"
+title: "Relatório Robaina"
 output: html_document
 date: "2025-09-30"
 ---
+
+### Glossário de Variáveis do Projeto
+
+Este glossário descreve os principais objetos, dataframes e ficheiros criados ao longo deste projeto de análise e otimização de carteiras.
+
+---
+
+#### Recolha e Preparação dos Dados
+[Ir para a seção de Coleta de Dados](#fase-1)
+
+* **`tickers_rv` (Vetor de texto):**
+    * **Descrição:** Armazena os códigos (tickers) dos ativos de Renda Variável (ações e ETFs) que compõem o nosso universo de investimento inicial.
+
+* **`dados_yf` (Dataframe):**
+    * **Descrição:** Contém os **preços de fechamento diários** para os ativos de Renda Variável. As colunas são `date` e os tickers de cada ativo (ex: `VALE3`, `PETR4`). Gerado pela função `baixar_dados_yf`.
+
+* **`dados_btc_brl` (Dataframe):**
+    * **Descrição:** Armazena os **preços de fechamento diários** do Bitcoin, já convertidos para Reais (BRL). Gerado pela função `baixar_btc_em_reais`.
+
+* **`df_fator_cdi` (Dataframe):**
+    * **Descrição:** Contém o **fator diário de rendimento** do CDI (ex: 1.00045), que representa `1 + a taxa de juro diária`. Gerado pela função `baixar_cdi_direto`.
+
+---
+
+#### Transformação e Análise
+[Ir para a seção de Transformação de dados](#fase-2)
+
+* **`df_retornos` (Dataframe):**
+    * **Descrição:** O nosso dataframe mestre para cálculos de performance. Contém os **retornos diários percentuais** (`(hoje/ontem) - 1`) para todos os ativos. É usado para calcular o backtest do desempenho das carteiras.
+
+* **`df_log_retornos` (Dataframe):**
+    * **Descrição:** Uma versão transformada do `df_retornos_finais`. Contém os **retornos logarítmicos** (`log(1 + retorno_percentual)`) para todos os ativos. Este formato é matematicamente preferível para análises estatísticas e é o input principal o Índice de Sharpe e para a otimização de Markowitz.
+
+---
+
+#### Seleção de ativos e Otimização da carteira
+[Ir para a seção de Construção da Carteira](#fase-3)
+
+* **`indices_sharpe_log` (Dataframe):**
+    * **Descrição:** Armazena o Índice de Sharpe anualizado para cada ativo. É usado para classificar os ativos do melhor para o pior em termos de retorno ajustado ao risco.
+
+* **`df_top_sharpe` (Dataframe):**
+    * **Descrição:** Um subconjunto do `df_log_retornos`, contendo apenas os ativos com o melhor desempenho histórico segundo o Índice de Sharpe. Representa o nosso universo de ativos "pré-selecionados" para a otimização.
+
+* **`carteira_otima_5_risco` (Objeto R):**
+    * **Descrição:** O objeto complexo que é o resultado da função `optimize.portfolio`. Ele contém todas as informações sobre a carteira otimizada, incluindo o mais importante: o vetor de pesos.
+
+* **`pesos_otimizados`:**
+    * **Descrição:** Vetor de pesos de cada ativo alcançado pela otimização de Markowitz
+
+---
+
+#### Resultados e Publicação
+[Ir para a seção de resultados e publicação](#fase-4)
+
+* **`pesos_otimizados.rds` (Ficheiro de dados R):**
+    * **Descrição:** Um dos produtos finais da análise. Armazena o vetor com os **pesos percentuais ótimos** para cada ativo na carteira final. É lido pela aplicação Shiny.
+
+* **`precos_atuais.rds` (Ficheiro de dados R):**
+    * **Descrição:** O segundo produto final. Armazena um pequeno dataframe com o **preço mais recente** de cada ativo. É lido pela aplicação Shiny para calcular a "lista de compras".
+
+* **`app.R` (Script Shiny):**
+    * **Descrição:** O "painel de controle" interativo do site. É um script que carrega os `.rds` e o `relatorio.html` para criar a interface web com as duas páginas.
+
+* **`publish.yml` (Ficheiro de configuração):**
+    * **Descrição:** O ficheiro de **automação** para o GitHub. Contém as instruções que dizem ao GitHub Actions como construir e publicar o site Shiny Live automaticamente.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -27,15 +93,11 @@ library(xts)
 library(scales)
 ```
 
+#### Definindo o Universo de Ativos e o Período de Análise
 ```{r param}
 #Aqui definimos o corte de dados que incluiremos no DataFrame.
 data_inicio <- as.Date("2016-01-04")
 data_fim <- as.Date("2025-09-30")
-```
-
-Para nossos ativos de renda variável, tomaremos os índices IBOV, SP500, para manter possível a montagem de uma carteira do investidor, utilizaremos um ETF correspondente a cada um dos índices. Incluiremos ainda as top 16 ações com mais peso no IBOV, uma vez que são empresas consolidadas e que tem liquidez suficiente para montar grandes posições.
-
-```{r rv}
 #Lista dos tickers pesquisados, top16 do IBOV + ETFs de SP500 e IBOV
 tickers_rv<- c(
   "IVVB11.SA",
@@ -57,6 +119,16 @@ tickers_rv<- c(
   "RDOR3.SA",
   "RENT3.SA"
 )
+```
+
+Para nossos ativos de renda variável, tomaremos os índices IBOV, SP500, para manter possível a montagem de uma carteira do investidor, utilizaremos um ETF correspondente a cada um dos índices. Incluiremos ainda as top 16 ações com mais peso no IBOV, uma vez que são empresas consolidadas e que tem liquidez suficiente para montar grandes posições.
+
+## Funções para Coleta Automatizada de Dados {#fase-1}
+Para coleta dos preços de Renda variável usaremos a API do Yahoo Finance, que agrega dados de mercados de ativos de mundo todo
+
+#### Coleta RV
+```{r rv}
+
 
 baixar_dados_yf <- function(tickers, data_inicio, data_fim) {
 
@@ -89,7 +161,10 @@ print(tail(dados_yf, 5))
 
 ```
 
+
 Para diversificação da nossa carteira, incluiremos também o BTC. No entanto ele é cotado em dólar então já contruiremos o df convertendo pelo câmbio de mercado.
+
+#### Coleta BTC
 ```{r btc}
 baixar_btc_em_reais <- function(data_inicio, data_fim) {
 
@@ -127,7 +202,12 @@ dados_btc_brl <- baixar_btc_em_reais(data_inicio, data_fim)
 # Visualizar as últimas 5 linhas do resultado
 print(tail(dados_btc_brl, 5))
 ```
+
 Por fim, o último ativo que comporá nosso portfolio será o CDI, que trataremos também como nossa taxa livre de risco, optamos por incluí-lô já que todo portfolio equilibrado tem uma mistura de ativos arriscados com a taxa livre de risco.
+
+Para coletar os dados do CDI, acessaremos o SGS do Banco Central, faremos o caminho longo, acessando a URL completa pacote "JSONLITE" já que o "rbcb" estava apresentando comportamente errático durante os testes
+
+#### Coleta CDI
 ```{r cdi}
 baixar_cdi_direto <- function(data_inicio, data_fim) {
 
@@ -157,7 +237,11 @@ baixar_cdi_direto <- function(data_inicio, data_fim) {
 }
 dados_cdi <- baixar_cdi_direto(data_inicio, data_fim)
 ```
+##  Transformação dos dados {#fase-2}
+
 Agora, montaremos um dataframe com o retorno de todos os nossos ativos, para facilitar nossas etapas posteriores de análise.
+
+#### Dataframe de retornos
 ```{r dataframe}
 #Primeiro, vamos usar as funções que criamos para construir nossas variáveis, primeiramente, aproveitaremos os resultados que usamos para testar as funções.
 df_precos_rv <- dados_yf
@@ -196,6 +280,8 @@ df_retornos <- reduce(lista_de_retornos, function(x, y) full_join(x, y, by = "da
 head(df_retornos)
 ```
 Enquanto os retornos são a forma ideal de vizualizar a rentabilidade de um portfólio, os log retornos permitem garantem uma distribuição que se aproxima da normal, e permitem  uma abordagem aditiva, tendo como resultado estatísticas melhores. Dessa forma, para usaremos os log retornos para nossa etapa de análise técnica.
+
+#### Dataframe de log-retornos
 ```{r}
 df_log_retornos <- df_retornos %>%
   mutate(across(
@@ -206,8 +292,11 @@ df_log_retornos <- df_retornos %>%
 
 print(head(df_retornos))
 ```
+## Seleção de ativos e montagem da carteira {#fase-3}
+
 Para montar a carteira do investidor, primeiramente eliminaremos os ativos com os piores Índices de Sharpe. Como o CDI é a taxa livre de risco, não será possível calcular o Sharpe do mesmo e iremos incluí-lo como padrão, uma vez que a carteira ideal é aquela que equilibra investimentos de risco com o ativo livre de risco. Nesta primeira etapa plotaremos o gráfico dos Índices de Sharpe, os 15 ativos com os piores Sharpes serão eliminados para a próxima etapa.
 
+#### Índice de Sharpe
 ```{r}
 #Primeiramente, calculamos o média do retorno livre de risco
 log_retorno_medio_cdi <- mean(df_log_retornos$CDI, na.rm = TRUE)
@@ -269,8 +358,9 @@ grafico_interativo_log <- ggplotly(grafico_estatico_log, tooltip = "text") %>%
 
 grafico_interativo_log
 ```
-Agora encontraremos a carteira ótima, com os 4 ativos com o melhores Sharpes + o CDI (taxa livre de risco). Definiremos um investimento Mínimo de 10% e máximo de 40% por ativo, para evitar exposição excessiva a ativos específicos.
+Agora encontraremos a carteira ótima, com os 4 ativos com o melhores Sharpes como mostra o gráfico acima + o CDI (taxa livre de risco). Definiremos um investimento Mínimo de 10% e máximo de 40% por ativo, para evitar exposição excessiva a ativos específicos.
 
+#### Otimização de Markowitz e pesos ótimos
 ```{r}
 
 # Primeiro converteremos para o formato "xts" que funciona melhor com os pacotes de análise financeira
@@ -314,6 +404,7 @@ carteira_otima_5_risco <- optimize.portfolio(R = retornos_xts_5,
 pesos_otimizados <- carteira_otima_5_risco$weights
 
 ```
+## Resultados e Publicação {#fase-4}
 
 Vamos rodar um backtest para comparar o desempenho da carteira ótima com uma carteira genérica que aloca igualmente nos 20 ativos. Criaremos nosso segundo gráfico comparando o retorno da nossa carteira otimizada com o retorno da carteira genérica com 20 ativos.
 
@@ -365,7 +456,11 @@ grafico_comparativo <- ggplot(df_desempenho_acumulado, aes(x = date, y = Valor_A
 
 ggplotly(grafico_comparativo)
 ```
+O gráfico mostra que depois de um início um pouco mais fraco a carteira otimizada passou a apresentar retornos consideravelmente superiores que a carteira genérica
+
 Vamos agora criar um dataframe de preços para calcularmos o portfolio do investidor dado um valor a ser investido.
+
+#### Dataframe das últimas cotações
 ```{r dataframe de preços}
 #M criamos nosso dataframe de preços usando full join para manter todas as datas.
 df_precos_todos <- full_join(dados_yf, dados_btc_brl, by = "date")
@@ -387,6 +482,8 @@ precos_atuais_df <- bind_rows(precos_atuais_df, tibble(ativo = "CDI", preco_atua
 
 ```
 Abaixo temos uma demonstração de como é calculado o portfolio do investidor apartir de um valor investido hipotético, na outra aba do site, é possível executar esse mesmo processo para qualquer valor escolhido.
+
+#### Simulação de alocação de portfolio
 ```{r}
 # Valor hipotético para demonstração apenas
 valor_total_investimento <- 100000
@@ -462,6 +559,8 @@ print(as.data.frame(lista_de_compras))
 
 ```
 O ShinyLive não consegue acessar APIs por motivos de segurança, geraremos os arquivos RDS com os dados necessários para construir o portfolio do investidor "on the fly".
+
+#### Armazenamento dos dados para a API
 ```{r}
 saveRDS(pesos_otimizados, file = "pesos_otimizados.rds")
 saveRDS(precos_atuais_df, file = "precos_atuais.rds")

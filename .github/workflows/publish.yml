@@ -1,14 +1,14 @@
 # Ficheiro: .github/workflows/publish.yml
-#final
-name: Build and Deploy Shiny Live to gh-pages
+
+name: Build and Deploy Shiny Live App
 
 on:
   push:
     branches:
-      - main  # Aciona sempre que houver um push na branch main
+      - main
 
 jobs:
-  build-and-deploy:
+  build-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -28,14 +28,12 @@ jobs:
             any::shinylive
 
       - name: Export Shiny Live application
-        run: shinylive::export(appdir = ".", destdir = "docs")
+        # --- CORREÇÃO PRINCIPAL AQUI ---
+        run: shinylive::export(appdir = "app_para_publicar", destdir = "docs")
         shell: Rscript {0}
 
-      - name: Deploy to gh-pages branch
+      - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # A pasta que contém o seu site construído
           publish_dir: ./docs
-          # O nome da branch para a qual será feito o deploy
-          publish_branch: gh-pages

@@ -1,0 +1,469 @@
+---
+title: "relatorio"
+output: html_document
+date: "2025-09-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r libs, include=FALSE}
+library(tidyquant)
+library(dplyr)
+library(httr)
+library(tidyr)
+library(jsonlite)
+library(ggplot2)
+library(plotly)
+library(purrr)
+library(ROI)
+library(ROI.plugin.quadprog)
+library(ROI.plugin.glpk)
+library(PortfolioAnalytics)
+library(xts)
+library(scales)
+```
+
+```{r param}
+#Aqui definimos o corte de dados que incluiremos no DataFrame.
+data_inicio <- as.Date("2016-01-04")
+data_fim <- as.Date("2025-09-30")
+```
+
+Para nossos ativos de renda variável, tomaremos os índices IBOV, SP500, para manter possível a montagem de uma carteira do investidor, utilizaremos um ETF correspondente a cada um dos índices. Incluiremos ainda as top 16 ações com mais peso no IBOV, uma vez que são empresas consolidadas e que tem liquidez suficiente para montar grandes posições.
+
+```{r rv}
+#Lista dos tickers pesquisados, top16 do IBOV + ETFs de SP500 e IBOV
+tickers_rv<- c(
+  "IVVB11.SA",
+  "BOVA11.SA",
+  "VALE3.SA",
+  "ITUB4.SA",
+  "PETR4.SA",
+  "ELET3.SA",
+  "BBDC4.SA",
+  "SBSP3.SA",
+  "B3SA3.SA",
+  "BPAC11.SA",
+  "ITSA4.SA",
+  "BBAS3.SA",
+  "EMBR3.SA",
+  "WEGE3.SA",
+  "ABEV3.SA",
+  "EQTL3.SA",
+  "RDOR3.SA",
+  "RENT3.SA"
+)
+
+baixar_dados_yf <- function(tickers, data_inicio, data_fim) {
+
+  # Usaremos tq_get para baixar todos os dados brutos de uma só vez
+  dados_brutos <- tq_get(tickers,
+                         get  = "stock.prices",
+                         from = data_inicio,
+                         to   = data_fim) %>%
+                  select(symbol, date, close)
+  
+  #Aproveitando, trocaremos os nomes dos tickers de volta para o padrão B3.
+  dados_limpos <- dados_brutos %>%
+    mutate(symbol = sub("\\.SA$", "", symbol))
+  
+  # Montando nosso dataframe:
+  resultado_yf <- dados_limpos %>%
+    select(date, symbol, close) %>%
+    pivot_wider(names_from = symbol, values_from = close) %>%
+    arrange(date)
+  
+  return(resultado_yf)
+}
+
+dados_yf <- baixar_dados_yf(tickers = tickers_rv, 
+                                     data_inicio = data_inicio, 
+                                     data_fim = data_fim)
+
+# Visualizar as últimas 5 linhas do dataframe resultante
+print(tail(dados_yf, 5))
+
+```
+
+Para diversificação da nossa carteira, incluiremos também o BTC. No entanto ele é cotado em dólar então já contruiremos o df convertendo pelo câmbio de mercado.
+```{r btc}
+baixar_btc_em_reais <- function(data_inicio, data_fim) {
+
+  
+  # Dados do BTC
+  btc_usd <- tq_get("BTC-USD",
+                             get  = "stock.prices",
+                             from = data_inicio,
+                             to   = data_fim) %>%
+                select(symbol, date, close)
+  
+  cambio_brl <- tq_get("BRL=X",
+                       get  = "stock.prices",
+                       from = data_inicio,
+                       to   = data_fim) %>%
+                select(date, cambio_taxa = close)
+  
+  #Juntaremos os dataframes usando inner_join, dessa forma removeremos os dias onde o BTC é o cotado mas o mercardo brasileiro não opera, facilitando o passo futuro de juntar com o DF de ações.
+
+ dados_combinados <- inner_join(btc_usd, cambio_brl, by = "date")
+                             
+  #Convertando o preço de fechamento do BTC
+  btc_convertido <- dados_combinados %>%
+    mutate(
+      BTC    = close * cambio_taxa,
+    ) %>%
+    # Seleciona e reordena as colunas para o resultado final
+    select(date, BTC)
+  
+  return(btc_convertido)
+}
+
+dados_btc_brl <- baixar_btc_em_reais(data_inicio, data_fim)
+
+# Visualizar as últimas 5 linhas do resultado
+print(tail(dados_btc_brl, 5))
+```
+Por fim, o último ativo que comporá nosso portfolio será o CDI, que trataremos também como nossa taxa livre de risco, optamos por incluí-lô já que todo portfolio equilibrado tem uma mistura de ativos arriscados com a taxa livre de risco.
+```{r cdi}
+baixar_cdi_direto <- function(data_inicio, data_fim) {
+
+  # Formatando as datas para dd/MM/yyyy
+  data_inicio_formatada <- format(data_inicio, "%d/%m/%Y")
+  data_fim_formatada <- format(data_fim, "%d/%m/%Y")
+  
+  # Montaremos a URL da API manualmente pois tive alguns problemas usando o "rbcb"
+  url_api <- modify_url("https://api.bcb.gov.br/dados/serie/bcdata.sgs.11/dados",
+                        query = list(formato = "json",
+                                     dataInicial = data_inicio_formatada,
+                                     dataFinal = data_fim_formatada))
+  
+  # Usando jsonlite para baixar e converter os dados
+  dados_brutos <- fromJSON(url_api)
+  
+  # Processando os dados
+  dados_cdi <- dados_brutos %>%
+    mutate(
+      TAXA_P = as.numeric(gsub(",", ".", valor)), # Troca vírgula por ponto
+      date = as.Date(data, format = "%d/%m/%Y")
+    ) %>%
+    mutate(FATOR_DIARIO = 1 + (TAXA_P / 100)) %>%
+    select(date, FATOR_DIARIO)
+  
+  return(dados_cdi)
+}
+dados_cdi <- baixar_cdi_direto(data_inicio, data_fim)
+```
+Agora, montaremos um dataframe com o retorno de todos os nossos ativos, para facilitar nossas etapas posteriores de análise.
+```{r dataframe}
+#Primeiro, vamos usar as funções que criamos para construir nossas variáveis, primeiramente, aproveitaremos os resultados que usamos para testar as funções.
+df_precos_rv <- dados_yf
+df_precos_btc <- dados_btc_brl
+df_fator_cdi <- dados_cdi
+
+
+# Calculando os retornos percentuais:
+# Para RV
+df_retornos_rv <- df_precos_rv %>%
+  mutate(across(
+    .cols = -date,
+    .fns = ~(. / lag(.) - 1),
+    .names = "{.col}"
+  ))
+
+# Retorno para o BTC
+df_retorno_btc <- df_precos_btc %>%
+  mutate(BTC = (BTC / lag(BTC) - 1))
+
+# Retorno para o CDI
+df_retorno_cdi <- df_fator_cdi %>%
+  mutate(CDI = FATOR_DIARIO - 1) %>% 
+  select(date, CDI)
+
+# Criamos uma lista com os 3 dataframes
+lista_de_retornos <- list(df_retornos_rv, df_retorno_btc, df_retorno_cdi)
+
+# Usamos 'reduce' com 'full-join' para juntar todos os dataframes da lista, sem eliminar as datas que tem NA para algum dos ativos, uma vez que tivemos IPOs depois da data_inicio, um "inner-join" reduziria demais nosso dataframe.
+df_retornos <- reduce(lista_de_retornos, function(x, y) full_join(x, y, by = "date")) %>%
+  # Garantindo a ordenação por data
+  arrange(date) %>%
+  # Removendo a primeira linha
+  filter(row_number() > 1) 
+
+head(df_retornos)
+```
+Enquanto os retornos são a forma ideal de vizualizar a rentabilidade de um portfólio, os log retornos permitem garantem uma distribuição que se aproxima da normal, e permitem  uma abordagem aditiva, tendo como resultado estatísticas melhores. Dessa forma, para usaremos os log retornos para nossa etapa de análise técnica.
+```{r}
+df_log_retornos <- df_retornos %>%
+  mutate(across(
+    .cols = -date, # Todas as colunas menos "date"
+    .fns = ~log(1 + .), #Log de 1 + retorno percentual
+    .names = "{.col}" # Mantém o mesmo nome da coluna
+  ))
+
+print(head(df_retornos))
+```
+Para montar a carteira do investidor, primeiramente eliminaremos os ativos com os piores Índices de Sharpe. Como o CDI é a taxa livre de risco, não será possível calcular o Sharpe do mesmo e iremos incluí-lo como padrão, uma vez que a carteira ideal é aquela que equilibra investimentos de risco com o ativo livre de risco. Nesta primeira etapa plotaremos o gráfico dos Índices de Sharpe, os 15 ativos com os piores Sharpes serão eliminados para a próxima etapa.
+
+```{r}
+#Primeiramente, calculamos o média do retorno livre de risco
+log_retorno_medio_cdi <- mean(df_log_retornos$CDI, na.rm = TRUE)
+
+# Calculando Sharpe dos outros ativos
+indices_sharpe_log <- df_log_retornos %>%
+  # Removendo o CDI, já que não é possível calcular o Sharpe da taxa livre de risco
+  select(-CDI) %>%
+  pivot_longer(cols = -date, names_to = "ativo", values_to = "log_retorno") %>%
+  # Removendo NAs
+  na.omit() %>%
+  group_by(ativo) %>%
+  
+  # Calculando os parâmetros:
+  summarise(
+    log_retorno_medio = mean(log_retorno),
+    desvio_padrao_log = sd(log_retorno)
+  ) %>%
+  mutate(
+    # Fórmula do Sharpe Anualizado
+    sharpe_ratio_log = ((log_retorno_medio - log_retorno_medio_cdi)*252) / (desvio_padrao_log * sqrt(252))
+  )
+
+#Separandos os ativos com os melhores Sharpes
+top_4_ativos <- indices_sharpe_log %>%
+  # Ordena o dataframe em ordem decrescente
+  arrange(desc(sharpe_ratio_log)) %>%
+  # Pega as 9 primeiras linhas
+  slice_head(n = 4) %>%
+  # Extrai apenas a coluna 'ativo'
+  pull(ativo)
+
+# Criamos um vetor com as colunas que manteremos
+colunas_mant <- c("date", top_4_ativos, "CDI")
+
+# Filtrando o dataframe
+df_top_sharpe <- df_log_retornos %>%
+  select(all_of(colunas_mant))
+
+head(df_top_sharpe)
+
+#Gráfico de Barras dos Sharpes
+grafico_estatico_log <- ggplot(indices_sharpe_log, aes(x = reorder(ativo, sharpe_ratio_log), 
+                                                      y = sharpe_ratio_log,
+                                                      text = paste("Ativo:", ativo, "\nSharpe (Log):", round(sharpe_ratio_log, 2)))) +
+  geom_col(aes(fill = sharpe_ratio_log > 0)) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "darkgreen", "FALSE" = "orangered"), guide = "none") +
+  labs(
+    title = "Índice de Sharpe Anualizado (Baseado em Log Retornos)",
+    x = "Ativo",
+    y = "Índice de Sharpe (Log)"
+  ) +
+  theme_minimal()
+
+# Convertendo para interativo
+grafico_interativo_log <- ggplotly(grafico_estatico_log, tooltip = "text") %>%
+  layout(showlegend = FALSE)
+
+grafico_interativo_log
+```
+Agora encontraremos a carteira ótima, com os 4 ativos com o melhores Sharpes + o CDI (taxa livre de risco). Definiremos um investimento Mínimo de 10% e máximo de 40% por ativo, para evitar exposição excessiva a ativos específicos.
+
+```{r}
+
+# Primeiro converteremos para o formato "xts" que funciona melhor com os pacotes de análise financeira
+retornos_xts_5 <- xts(df_top_sharpe[,-1], order.by = df_top_sharpe$date)
+
+# Vetor de nomes
+nomes_dos_5_ativos <- colnames(retornos_xts_5)
+
+# Definindo o portfolio
+port_spec_5_ativos <- portfolio.spec(assets = nomes_dos_5_ativos)
+
+# Restrições:
+
+#Gastar tudo
+port_spec_5_ativos <- add.constraint(portfolio = port_spec_5_ativos, type = "full_investment")
+#Sem "shorts"
+port_spec_5_ativos <- add.constraint(portfolio = port_spec_5_ativos, type = "long_only")
+
+
+#Diversificação
+port_spec_5_ativos <- add.constraint(portfolio = port_spec_5_ativos,
+                                  type = "box",
+                                  min = 0.10, 
+                                  max = 0.40) 
+
+# Maximizando o retorno
+port_spec_5_ativos <- add.objective(portfolio = port_spec_5_ativos,
+                                    type = "return",
+                                    name = "mean")
+#Minimizando o risco
+port_spec_5_ativos <- add.objective(portfolio = port_spec_5_ativos,
+                                     type = "risk",
+                                     name = "StdDev")
+
+#Otimização:
+carteira_otima_5_risco <- optimize.portfolio(R = retornos_xts_5,
+                                             portfolio = port_spec_5_ativos,
+                                             optimize_method = "ROI",
+                                             trace = FALSE)
+
+pesos_otimizados <- carteira_otima_5_risco$weights
+
+```
+
+Vamos rodar um backtest para comparar o desempenho da carteira ótima com uma carteira genérica que aloca igualmente nos 20 ativos. Criaremos nosso segundo gráfico comparando o retorno da nossa carteira otimizada com o retorno da carteira genérica com 20 ativos.
+
+```{r retornos das carteiras}
+#Vetrores de nomes dos ativos que usaremos no tratamento das bases:
+nomes_otimizados <- names(pesos_otimizados)
+nomes_benchmark_20 <- setdiff(colnames(df_retornos), "date")
+
+# DF do Backtest
+df_retornos_backtest <- df_retornos %>%
+  filter(date >= as.Date("2022-01-01") & date <= as.Date("2025-09-30"))
+# Retorno da carteira otimizada
+retornos_otimizada <- as.matrix(df_retornos_backtest[, nomes_otimizados]) %*% pesos_otimizados
+# Retornos da carteira genérica
+retornos_peso_igual_20 <- rowMeans(df_retornos_backtest[, nomes_benchmark_20], na.rm = TRUE)
+# Juntaremos tudo em um Dataframe para tratarmos os dados de forma unificada
+df_retornos_carteiras <- tibble(
+  date = df_retornos_backtest$date,
+  Otimizada = as.numeric(retornos_otimizada),
+  `Peso Igual (20 Ativos)` = retornos_peso_igual_20
+)
+
+#Tratando o dataframe:
+df_desempenho_acumulado <- df_retornos_carteiras %>%
+  # Pivota para o formato longo
+  pivot_longer(cols = -date, names_to = "Carteira", values_to = "Retorno_Diario") %>%
+  # Precisamos remover todos os NA e NaN pois na fórmula do "cumprod" estes gerarão um erro que será carregado
+  filter(!is.na(Retorno_Diario) & !is.nan(Retorno_Diario)) %>%
+  # Agrupamos por carteira
+  group_by(Carteira) %>%
+  # Calculamos o rendimento acumulado
+  mutate(Valor_Acumulado = cumprod(1 + Retorno_Diario)) %>%
+  ungroup()
+
+# Montagem do gráfico de comparação
+grafico_comparativo <- ggplot(df_desempenho_acumulado, aes(x = date, y = Valor_Acumulado, color = Carteira, group = Carteira)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Backtest: Carteira Otimizada vs. Carteira Genérica",
+    subtitle = "Crescimento de R$1,00 desde Jan/2022",
+    x = "Data",
+    y = "Valor Acumulado (R$)",
+    color = "Estratégia"
+  ) +
+  scale_y_continuous(labels = scales::dollar_format(prefix = "R$")) +
+  scale_color_manual(values = c("Otimizada" = "navyblue", "Peso Igual (20 Ativos)" = "darkorange")) +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+ggplotly(grafico_comparativo)
+```
+Vamos agora criar um dataframe de preços para calcularmos o portfolio do investidor dado um valor a ser investido.
+```{r dataframe de preços}
+#M criamos nosso dataframe de preços usando full join para manter todas as datas.
+df_precos_todos <- full_join(dados_yf, dados_btc_brl, by = "date")
+
+# Cotação mais recente:
+precos_atuais_df <- df_precos_todos %>%
+  # Pivotamos para o formato longo para facilitar
+  pivot_longer(cols = -date, names_to = "ativo", values_to = "preco_atual") %>%
+  # Removemos os NA
+  na.omit() %>%
+  # Agrupamos por ativo para encontrar a cotação mais recente de cada
+  group_by(ativo) %>%
+  filter(date == max(date)) %>%
+  ungroup() %>%
+  select(ativo, preco_atual)
+
+# Adicionamos o preço do CDI, que definiremos como 1, uma vez que podemos comprar qualquer valor em reais.
+precos_atuais_df <- bind_rows(precos_atuais_df, tibble(ativo = "CDI", preco_atual = 1))
+
+```
+Abaixo temos uma demonstração de como é calculado o portfolio do investidor apartir de um valor investido hipotético, na outra aba do site, é possível executar esse mesmo processo para qualquer valor escolhido.
+```{r}
+# Valor hipotético para demonstração apenas
+valor_total_investimento <- 100000
+#Calculando o valor ideal a ser investido em cada ativo
+df_ordens <- tibble(
+  ativo = names(pesos_otimizados),
+  peso_otimizado = pesos_otimizados
+) %>%
+  mutate(valor_alocado_ideal = peso_otimizado * valor_total_investimento) %>%
+  left_join(precos_atuais_df, by = "ativo")
+
+# Valor real a ser investido
+df_ordens <- df_ordens %>%
+  mutate(
+        # As ações e ETF são indivisíveis, então precisamos arredondar para baixo, BTC e CDI toleram receber qualquer quantia.
+    quantidade_a_comprar = case_when(
+      ativo == "BTC" ~ valor_alocado_ideal / preco_atual,
+      ativo != "CDI" ~ floor(valor_alocado_ideal / preco_atual),
+      TRUE ~ NA_real_
+    ),
+    valor_real_alocado = case_when(
+      ativo != "BTC" & ativo != "CDI" ~ quantidade_a_comprar * preco_atual,
+      TRUE ~ valor_alocado_ideal
+    )
+  )
+
+# Para não deixar sobrar caixa sem render, a sobra das ações será alocada no ativo livre de risco.
+total_gasto_nao_cdi <- df_ordens %>%
+  filter(ativo != "CDI") %>%
+  summarise(total = sum(valor_real_alocado)) %>%
+  pull(total)
+
+# Investimento no CDI é tudo que que falta pra completar o montante total
+valor_final_cdi <- valor_total_investimento - total_gasto_nao_cdi
+
+# Atualizamos o valor alocado no CDI
+df_ordens <- df_ordens %>%
+  mutate(
+    valor_real_alocado = if_else(ativo == "CDI", 
+                                 valor_final_cdi, 
+                                 valor_real_alocado)
+  )
+
+
+# Apresentando a lista de compras para nosso investidor:
+
+lista_de_compras <- df_ordens %>%
+  select(
+    Ativo = ativo,
+    quantidade_a_comprar,
+    preco_atual,
+    valor_real_alocado
+  ) %>%
+  # Formatando a resposta, considerando as divisibilidade do BTC e a característica monetária do CDI.
+  mutate(
+    `Quantidade / Fração` = case_when(
+      Ativo == "BTC" ~ formatC(quantidade_a_comprar, format = "f", digits = 8),
+      Ativo == "CDI" ~ scales::dollar(valor_real_alocado, prefix = "R$"),
+      TRUE ~ as.character(round(quantidade_a_comprar, 0))
+    ),
+    
+    `Preço Unitário (R$)` = if_else(Ativo == "CDI", 
+                                    NA_character_, 
+                                    as.character(round(preco_atual, 2))),
+                                    
+    `Valor a Investir (R$)` = scales::dollar(valor_real_alocado, prefix = "R$")
+  ) %>%
+  # Seleciona apenas as colunas finais para a exibição
+  select(Ativo, `Quantidade / Fração`, `Preço Unitário (R$)`, `Valor a Investir (R$)`)
+
+
+print(as.data.frame(lista_de_compras))
+
+```
+O ShinyLive não consegue acessar APIs por motivos de segurança, geraremos os arquivos RDS com os dados necessários para construir o portfolio do investidor "on the fly".
+```{r}
+saveRDS(pesos_otimizados, file = "pesos_otimizados.rds")
+saveRDS(precos_atuais_df, file = "precos_atuais.rds")
+```
+

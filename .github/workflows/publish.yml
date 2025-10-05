@@ -1,6 +1,6 @@
 # Ficheiro: .github/workflows/publish.yml
 
-name: Build and Deploy Shiny Live App
+name: Build and Deploy Shiny Live to gh-pages
 
 on:
   push:
@@ -8,8 +8,14 @@ on:
       - main
 
 jobs:
-  build-deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
+    
+    # --- CORREÇÃO FINAL AQUI ---
+    # Dá permissão ao workflow para escrever no repositório.
+    permissions:
+      contents: write
+      
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -28,12 +34,12 @@ jobs:
             any::shinylive
 
       - name: Export Shiny Live application
-        # --- CORREÇÃO PRINCIPAL AQUI ---
         run: shinylive::export(appdir = "app_para_publicar", destdir = "docs")
         shell: Rscript {0}
 
-      - name: Deploy to GitHub Pages
+      - name: Deploy to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./docs
+          publish_branch: gh-pages

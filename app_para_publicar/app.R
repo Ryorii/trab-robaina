@@ -16,13 +16,22 @@ PRECOS_ATUAIS_GLOBAIS <- readRDS("precos_atuais.rds")
 # CONSTRUÇÃO DA INTERFACE MULTI-PÁGINA (UI) - Versão Corrigida
 # ==============================================================================
 ui <- navbarPage(
-  "Análise e Otimização de Carteira",
+  title = "Sistema de Investimentos",
   
-  # --- PÁGINA 1: O RELATÓRIO ESTÁTICO (DENTRO DE UM IFRAME) ---
+  # --- PÁGINA 1: DASHBOARD (HOMEPAGE) ---
+  tabPanel("Mapa Econômico",
+           # O iframe carrega o arquivo estático que está na pasta 'www'
+           tags$iframe(
+             src = "dashboard.html", 
+             style = "width:100%; height:calc(100vh - 80px); border:none; display:block;"
+           )
+  ),
+
+
   tabPanel("Análise de Mercado",
            # O iframe isola o HTML, prevenindo conflitos de JavaScript.
            # O arquivo relatorio.html deve estar em uma subpasta chamada 'www'.
-           tags$iframe(style="height:800px; width:100%; border:none;", 
+           tags$iframe(style="height:1600px; width:100%; border:none;", 
                        src="relatorio.html")
   ),
   

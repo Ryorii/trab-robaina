@@ -1,10 +1,16 @@
 ---
-title: "Panorama Econômico: PIB x Renda"
+title: "Panorama Econômico"
 output: 
   flexdashboard::flex_dashboard:
     orientation: columns
     vertical_layout: fill
     theme: flatly
+    self_contained: true
+knit: (function(inputFile, encoding) { 
+      rmarkdown::render(inputFile, 
+                        encoding = encoding,
+                        output_dir = "app_para_publicar/www",
+                        output_file = "dashboard.html") })
 ---
 
 ```{r setup, include=FALSE}

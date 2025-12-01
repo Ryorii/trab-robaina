@@ -73,6 +73,27 @@ Este glossário descreve os principais objetos, dataframes e ficheiros criados a
 
 * **`publish.yml` (Ficheiro de configuração):**
     * **Descrição:** O ficheiro de **automação** para o GitHub. Contém as instruções que dizem ao GitHub Actions como construir e publicar o site Shiny Live automaticamente.
+    
+#### Dados para o Dashboard
+[Ir para a seção de resultados e publicação](#fase-5)
+
+* **`df_pib` (Dataframe):**
+    * **Descrição:** Armazena os dados brutos do **PIB estadual** (em mil reais) obtidos diretamente da API do SIDRA (IBGE).
+
+* **`df_pop` (Dataframe):**
+    * **Descrição:** Armazena os dados de **população estimada** por estado, também obtidos via API do SIDRA. 
+
+* **`df_final` (Dataframe):**
+    * **Descrição:** Um dataframe intermediário que resulta da união (`left_join`) entre o PIB e a População. Contém a variável calculada **PIB_per_Capita**.
+
+* **`df_renda` (Dataframe):**
+    * **Descrição:** Contém os dados da PNAD Contínua sobre o **Rendimento médio mensal domiciliar per capita**. 
+    
+* **`df_consolidado` (Dataframe):**
+    * **Descrição:** O dataset mestre que será exportado para o Dashboard. Ele unifica todas as informações econômicas (PIB e Renda Anualizada) e adiciona a classificação geográfica **`Regiao`** (Norte, Nordeste, etc.) baseada no código IBGE, permitindo a coloração e filtragem no mapa interativo.
+    
+#### Bibliografia
+[Ir para a seção de resultados e publicação](#fase-6)
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -284,6 +305,8 @@ df_retornos <- reduce(lista_de_retornos, function(x, y) full_join(x, y, by = "da
 
 head(df_retornos)
 ```
+
+
 Enquanto os retornos são a forma ideal de vizualizar a rentabilidade de um portfólio, os log retornos permitem garantem uma distribuição que se aproxima da normal, e permitem  uma abordagem aditiva, tendo como resultado estatísticas melhores. Dessa forma, para usaremos os log retornos para nossa etapa de análise técnica.
 
 #### Dataframe de log-retornos
@@ -563,23 +586,62 @@ lista_de_compras <- df_ordens %>%
 print(as.data.frame(lista_de_compras))
 
 ```
-#### Coleta de Dados: PIB dos Municípios (Conexão Direta IPv4)
-Nesta etapa, conectamos diretamente à API do IBGE usando protocolo IPv4 forçado e uma URL pré-formatada para evitar erros de caracteres inválidos.
 
-```{r coleta_pib_direta_v4, warning=FALSE, message=FALSE}
-library(jsonlite)
-library(dplyr)
+Agora, vou preparar um DF de dados para integrar a tabela dinâmica que usaremos no dashboard:
+```{r}
 
-# ==============================================================================
-# 1. Obter PIB (Tabela 5938) - Ano 2021
-# ==============================================================================
+df_retornos_perf <- df_retornos
+
+retornos_perf <- as.matrix(df_retornos_perf[, nomes_otimizados]) %*% pesos_otimizados
+# Retornos da carteira genérica
+retornos_peso_igual_perf <- rowMeans(df_retornos_perf[, nomes_benchmark_20], na.rm = TRUE)
+df_retornos_carteiras_perf <- tibble(
+  date = df_retornos_perf$date,
+  Otimizada = as.numeric(retornos_perf),
+  `Peso Igual (20 Ativos)` = retornos_peso_igual_perf
+)
+
+df_completo <- left_join(df_retornos_perf, df_retornos_carteiras_perf, by = "date")
+
+
+df_numerico <- df_completo %>% select(where(is.numeric))
+
+tabela_performance <- data.frame(
+  Ativo = names(df_numerico),
+  Retorno_Diario = colMeans(df_numerico, na.rm = TRUE),
+  Risco_Diario = apply(df_numerico, 2, sd, na.rm = TRUE)
+) %>%
+  mutate(
+    # Anualização (252 dias úteis)
+    Retorno_AA = Retorno_Diario * 252,
+    Risco_AA = Risco_Diario * sqrt(252),
+    
+    # Classificação do Tipo (Para colorir diferente no Dashboard)
+    Tipo = case_when(
+      Ativo == "Otimizada" ~ "Portfólio",
+      Ativo == "Peso Igual (20 Ativos)" ~ "Portfólio",
+      Ativo == "IVVB11" ~ "Índice",
+      Ativo == "BOVA11" ~ "Índice",
+      TRUE ~ "Ativo Individual"
+    )
+  ) %>%
+
+  select(-Retorno_Diario, -Risco_Diario)
+
+print(tabela_performance)
+
+```
+
+
+## Coleta para o Mapa do Dashboard {#fase-5}
+Nesta etapa, coletaremos PIB estudual e renda média estadual para compor nosso mapa interativo dos estados.
+
+Começando pelo PIB.
+```{r}
+
 url_pib <- "https://apisidra.ibge.gov.br/values/t/5938/n3/all/v/37/p/2021?formato=json"
 raw_pib <- fromJSON(url_pib)
 
-# TRUQUE DE SEGURANÇA: Não renomeamos o cabeçalho. Usamos os códigos originais.
-# D1C = Código da UF (ex: 11, 35)
-# D1N = Nome da UF (ex: Rondônia, São Paulo)
-# V   = Valor
 df_pib <- raw_pib[-1, ] %>%  # Removemos a 1ª linha (que contém apenas textos descritivos)
   as_tibble() %>%
   select(
@@ -589,9 +651,7 @@ df_pib <- raw_pib[-1, ] %>%  # Removemos a 1ª linha (que contém apenas textos 
   ) %>%
   mutate(PIB_Mil_Reais = as.numeric(PIB_Mil_Reais))
 
-# ==============================================================================
-# 2. Obter População (Tabela 6579) - Ano 2021
-# ==============================================================================
+
 url_pop <- "https://apisidra.ibge.gov.br/values/t/6579/n3/all/v/9324/p/2021?formato=json"
 raw_pop <- fromJSON(url_pop)
 
@@ -603,9 +663,6 @@ df_pop <- raw_pop[-1, ] %>%
   ) %>%
   mutate(Populacao = as.numeric(Populacao))
 
-# ==============================================================================
-# 3. Cruzamento e Cálculo
-# ==============================================================================
 df_final <- df_pib %>%
   left_join(df_pop, by = "COD_UF") %>%
   mutate(
@@ -626,13 +683,8 @@ df_final <- df_pib %>%
 # Visualizar Top 10
 print(head(df_final, 10))
 ```
-
+Agora os dados da PNAD.
 ```{r}
-library(httr)
-library(jsonlite)
-library(dplyr)
-
-# 1. Baixar dados (PNAD - Rendimento Domiciliar per Capita - Último ano)
 url_pnad <- "https://apisidra.ibge.gov.br/values/t/5436/n3/all/v/5932/p/last?formato=json"
 
 response <- GET(
@@ -641,8 +693,6 @@ response <- GET(
   timeout(20))
 raw_pnad <- fromJSON(content(response, "text", encoding = "UTF-8"))
 
-# 2. Tratamento Corrigido
-# Mapeamos D3N como Ano (que é o padrão quando D2N é a descrição)
 df_renda <- raw_pnad[-1, ] %>%
   as_tibble() %>%
   select(
@@ -655,17 +705,14 @@ df_renda <- raw_pnad[-1, ] %>%
     COD_UF = as.numeric(COD_UF)
   )
 
-# Mostra o ano para confirmar (deve aparecer 2023 ou 2024)
 print(head(df_renda))
 ```
-
+Aqui tratamos os dados e e preparamos o DF de dados que exportaremos para o dashboard.
 ```{r}
 
-# 1. Preparação da Tabela de Renda (Seleção segura)
 df_renda_clean <- df_renda %>%
   select(COD_UF, Renda_Domiciliar, matches("Ano|Trimestre"))
 
-# 2. Consolidação (Join e Cálculos)
 df_consolidado <- df_final %>%
   inner_join(df_renda_clean, by = "COD_UF") %>%
   mutate(
@@ -690,13 +737,6 @@ df_consolidado <- df_final %>%
   ) %>%
   arrange(desc(PIB_per_Capita))
 
-# 3. Verificação
-print(head(df_consolidado))
-
-
-
-# Salvamento: 
-saveRDS(df_consolidado, file = "app_para_publicar/dados_economicos_estados.rds")
 ```
 
 
@@ -707,5 +747,29 @@ O ShinyLive não consegue acessar APIs por motivos de segurança, geraremos os a
 saveRDS(pesos_otimizados, file = "app_para_publicar/pesos_otimizados.rds")
 saveRDS(precos_atuais_df, file = "app_para_publicar/precos_atuais.rds")
 saveRDS(df_consolidado, file = "app_para_publicar/dados_economicos_estados.rds")
+saveRDS(tabela_performance, "app_para_publicar/tabela_performance.rds")
+saveRDS(grafico_interativo_log, "app_para_publicar/grafico_interativo_log.rds")
+saveRDS(grafico_comparativo, "app_para_publicar/grafico_comparativo.rds")
+
 ```
 
+#### Bibliografia e Fontes de Dados {#fase-6}
+
+Este projeto utilizou dados públicos e bibliotecas de código aberto. Abaixo estão listadas as fontes primárias de dados e as referências metodológicas para o código desenvolvido.
+
+**1. Fontes de Dados (APIs e Bases Oficiais)**
+
+* **Yahoo Finance:** Fonte dos preços históricos de ações, ETFs e Câmbio (BTC-USD, BRL=X). Acessado via API através do pacote *tidyquant*.
+* **Banco Central do Brasil (BCB):** Fonte da taxa livre de risco (CDI). Série temporal nº 11 (Taxa de juros - CDI acumulada no mês anualizada base 252), obtida através do Sistema Gerenciador de Séries Temporais (SGS).
+* **Instituto Brasileiro de Geografia e Estatística (IBGE) - SIDRA:**
+    * *Tabela 5938:* Produto Interno Bruto (PIB) a preços correntes.
+    * *Tabela 6579:* Estimativas de população residente.
+    * *Tabela 5436:* Rendimento médio mensal domiciliar per capita (PNAD Contínua).
+
+**2. Referências Metodológicas e Trechos de Código**
+
+* **Otimização de Portfólio (Markowitz):** A implementação da função `optimize.portfolio` utilizando programação quadrática (plugin `ROI`) segue a metodologia descrita na documentação oficial do pacote *PortfolioAnalytics*.
+    * *Ref:* Peterson, B. G., et al. (2018). *PortfolioAnalytics: Portfolio Analysis, including Numerical Methods for Optimization of Portfolios*. R package version 1.1.0.
+* **Cálculo de Retornos Logarítmicos e Sharpe:** A abordagem de transformação logarítmica (`log(1 + retorno)`) para normalização estatística em finanças é baseada na literatura clássica de econometria financeira.
+    * *Ref:* Sharpe, W. F. (1966). *Mutual Fund Performance*. Journal of Business, 39(1), 119-138.
+* **Integração de Dados IBGE (JSON):** A estrutura de requisição `fromJSON` para a API do SIDRA foi adaptada de padrões de código aberto da comunidade R-Brasil para consumo de dados governamentais.

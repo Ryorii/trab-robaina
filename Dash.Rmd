@@ -14,61 +14,183 @@ knit: (function(inputFile, encoding) {
 ---
 
 ```{r setup, include=FALSE}
-# ==============================================================================
-# 1. CARREGAMENTO DE PACOTES E DADOS
-# ==============================================================================
+
 library(flexdashboard)
 library(dplyr)
-library(leaflet) # Mapas
-library(sf)      # Geometria Espacial
-library(geobr)   # Shapefiles do Brasil
-library(DT)      # Tabelas Interativa
+library(leaflet) 
+library(sf)      
+library(geobr)   
+library(DT)      
 library(stringr)
+library(plotly)
+library(scales) 
 
-# Caminho do arquivo (ajuste se necessário)
-# Estamos assumindo que o .Rmd está na raiz e os dados em /dados
+
 arquivo_dados <- "app_para_publicar/dados_economicos_estados.rds"
 
 
-# Carrega os dados processados
 df_economia <- readRDS(arquivo_dados)
+graf_sharpe <-readRDS("app_para_publicar/grafico_interativo_log.rds")
+graf_backtest <- readRDS( "app_para_publicar/grafico_comparativo.rds")
 ```
 
 ```{r}
 mapa_br <- read_state(year = 2020, showProgress = FALSE)
-# Convertemos explicitamente para WGS84 (EPSG:4326), que é o padrão da Web/Leaflet
 mapa_br <- st_transform(mapa_br, crs = 4326)
 
-# --- CORREÇÃO DO ERRO AQUI ---
-# Forçamos as colunas de código a serem numéricas em AMBOS os lados
-# Isso garante que o join funcione independente de como o dado foi lido
+
 mapa_br$code_state <- as.numeric(mapa_br$code_state)
 df_economia$COD_UF <- as.numeric(df_economia$COD_UF)
 
-# ==============================================================================
-# 3. UNIÃO (JOIN) DADOS + MAPA
-# ==============================================================================
+
 dados_mapa <- mapa_br %>%
   left_join(df_economia, by = c("code_state" = "COD_UF")) %>%
   mutate(
-    # CORREÇÃO CRÍTICA:
-    # 1. Removemos os pontos de milhar (32.000 -> 32000)
-    # 2. Trocamos vírgula por ponto decimal (, -> .)
-    # 3. Convertemos para numérico
+
     PIB_Numerico = as.numeric(stringr::str_replace_all(
       stringr::str_replace_all(PIB_per_Capita, "\\.", ""), ",", ".")
     ),
     
-    # Fazemos o mesmo para Renda, caso ela venha como texto em algum momento
     Renda_Numerica = as.numeric(as.character(Renda_Anualizada))
   )
 ```
 
+```{r}
+tabela_base <- readRDS("app_para_publicar/tabela_performance.rds")
+
+
+df_ativos <- tabela_base %>%
+  filter(Tipo %in% c("Ativo Individual", "Índice")) %>%
+  select(Ativo, Tipo, Retorno_AA, Risco_AA) %>%
+  arrange(desc(Retorno_AA)) # Ordenação padrão inicial
+
+df_carteiras <- tabela_base %>%
+  filter(Tipo %in% c("Portfólio", "Índice")) %>%
+  select(Ativo, Tipo, Retorno_AA, Risco_AA) %>%
+  arrange(desc(Retorno_AA)) # Ordenação padrão inicial
+
+formatar_dt <- function(df) {
+  datatable(
+    df,
+    rownames = FALSE,
+    extensions = 'Buttons',
+    options = list(
+      pageLength = 20,
+      dom = 'Bfrtip', # Adiciona botões de exportação (Copy, CSV, Excel)
+      buttons = c('copy', 'csv', 'excel'),
+      order = list(list(2, 'desc')) # Garante ordenação inicial pelo Retorno (coluna índice 2)
+    )
+  ) %>%
+    formatPercentage(c("Retorno_AA", "Risco_AA"), 2) %>%
+    formatStyle(
+      'Retorno_AA',
+      color = styleInterval(0, c('red', 'green')), # Pinta retornos negativos de vermelho
+      fontWeight = 'bold'
+    )
+}
+
+```
 
 Column {data-width=650}
 -----------------------------------------------------------------------
+### Sharpe
 
-### Mapa da Riqueza
+```{r}
+ggplotly(graf_sharpe)
+```
+
+### Risco x Retorno
+
+```{r}
+
+
+# Criar o gráfico interativo
+dados_gerais <- tabela_base %>% filter(Ativo != "Otimizada")
+dados_destaque <- tabela_base %>% filter(Ativo == "Otimizada")
+
+# Definição de Cores
+cores_padrao <- c("Ativo Individual" = "#1f77b4", # Azul
+                  "Portfólio" = "#2ca02c",        # Verde
+                  "Índice" = "#ff7f0e")           # Laranja
+
+cor_especial_otimizada <- "#E0115F" # Rosa/Rubi vibrante para destaque máximo
+# Outras opções de cor: "#FFD700" (Dourado), "#800080" (Roxo)
+
+# --- Criação do Gráfico ---
+plot_ly() %>%
+  # CAMADA 1: Todos os ativos "normais"
+  add_trace(
+    data = dados_gerais,
+    x = ~Risco_AA,
+    y = ~Retorno_AA,
+    type = 'scatter',
+    mode = 'markers',
+    color = ~Tipo, # Usa a legenda padrão por tipo
+    colors = cores_padrao,
+    text = ~paste("<b>", Ativo, "</b><br>",
+                  "Retorno: ", percent(Retorno_AA, 0.01), "<br>",
+                  "Risco: ", percent(Risco_AA, 0.01)),
+    hoverinfo = "text",
+    # Tamanho normal e leve transparência para não ofuscar o destaque
+    marker = list(size = 12, opacity = 0.7, line = list(color = 'white', width = 1))
+  ) %>%
+
+  # CAMADA 2: Apenas a Carteira Otimizada (Super Destaque)
+  add_trace(
+    data = dados_destaque,
+    x = ~Risco_AA,
+    y = ~Retorno_AA,
+    type = 'scatter',
+    mode = 'markers',
+    name = "⭐ Carteira Otimizada", # Nome de destaque na legenda
+    text = ~paste("<b>", Ativo, "</b> (CAMPEÃ)<br>",
+                  "Retorno: ", percent(Retorno_AA, 0.01), "<br>",
+                  "Risco: ", percent(Risco_AA, 0.01)),
+    hoverinfo = "text",
+    marker = list(
+      color = cor_especial_otimizada, # Cor especial direta
+      size = 20, # Tamanho muito maior (mais que o dobro dos outros)
+      symbol = 'diamond', # Formato de diamante para diferenciar
+      line = list(color = 'white', width = 1) # Borda preta grossa para "saltar" da tela
+    )
+  ) %>%
+  # Layout final
+  layout(
+    title = "Fronteira de Risco x Retorno",
+    xaxis = list(title = "Risco (Volatilidade Anual)", tickformat = ".0%"),
+    yaxis = list(title = "Retorno Esperado (Anual)", tickformat = ".0%"),
+    legend = list(orientation = "h", x = 0.1, y = -0.2), # Legenda horizontal
+    hovermode = "closest"
+  )
+```
+### Portfólio Otimizado x Pesos iguais
+
+```{r}
+ggplotly(graf_backtest)
+```
+
+
+
+Column {data-width=350 .tabset}
+-----------------------------------------------------------------------
+
+
+
+
+
+### Ativos
+
+```{r}
+formatar_dt(df_ativos)
+```
+
+### Carteiras
+
+```{r}
+formatar_dt(df_carteiras)
+```
+
+### Onde focar a estratégia de marketing para o serviço?
 
 ```{r}
 paleta <- colorNumeric(
@@ -115,36 +237,5 @@ leaflet(dados_mapa) %>%
     # Usamos apenas 'big.mark' para separar milhares.
     labFormat = labelFormat(big.mark = ".") 
   )
-```
-
-
-Column {data-width=350}
------------------------------------------------------------------------
-```{r}
-df_economia %>%
-  # Seleciona apenas as colunas relevantes, removendo o Gap
-  select(Estado = UF, Regiao, PIB_pc = PIB_per_Capita, Renda_Anual = Renda_Anualizada) %>%
-  mutate(
-    # O PIB já vem formatado como texto do seu ETL? Se vier como número, arredonde aqui.
-    # Se vier como texto (32.000,00), o round vai dar erro, então assumimos que está pronto.
-    # Vou aplicar o round apenas na Renda que sabemos ser numérica.
-    Renda_Anual = round(Renda_Anual, 2)
-  ) %>%
-  datatable(
-    options = list(pageLength = 10, dom = 'tp'), 
-    rownames = FALSE
-  )
-```
-
-### Chart B
-
-```{r}
-
-```
-
-### Chart C
-
-```{r}
-
 ```
 

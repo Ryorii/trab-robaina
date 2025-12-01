@@ -1,0 +1,144 @@
+---
+title: "Panorama Econômico: PIB x Renda"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+# ==============================================================================
+# 1. CARREGAMENTO DE PACOTES E DADOS
+# ==============================================================================
+library(flexdashboard)
+library(dplyr)
+library(leaflet) # Mapas
+library(sf)      # Geometria Espacial
+library(geobr)   # Shapefiles do Brasil
+library(DT)      # Tabelas Interativa
+library(stringr)
+
+# Caminho do arquivo (ajuste se necessário)
+# Estamos assumindo que o .Rmd está na raiz e os dados em /dados
+arquivo_dados <- "app_para_publicar/dados_economicos_estados.rds"
+
+
+# Carrega os dados processados
+df_economia <- readRDS(arquivo_dados)
+```
+
+```{r}
+mapa_br <- read_state(year = 2020, showProgress = FALSE)
+# Convertemos explicitamente para WGS84 (EPSG:4326), que é o padrão da Web/Leaflet
+mapa_br <- st_transform(mapa_br, crs = 4326)
+
+# --- CORREÇÃO DO ERRO AQUI ---
+# Forçamos as colunas de código a serem numéricas em AMBOS os lados
+# Isso garante que o join funcione independente de como o dado foi lido
+mapa_br$code_state <- as.numeric(mapa_br$code_state)
+df_economia$COD_UF <- as.numeric(df_economia$COD_UF)
+
+# ==============================================================================
+# 3. UNIÃO (JOIN) DADOS + MAPA
+# ==============================================================================
+dados_mapa <- mapa_br %>%
+  left_join(df_economia, by = c("code_state" = "COD_UF")) %>%
+  mutate(
+    # CORREÇÃO CRÍTICA:
+    # 1. Removemos os pontos de milhar (32.000 -> 32000)
+    # 2. Trocamos vírgula por ponto decimal (, -> .)
+    # 3. Convertemos para numérico
+    PIB_Numerico = as.numeric(stringr::str_replace_all(
+      stringr::str_replace_all(PIB_per_Capita, "\\.", ""), ",", ".")
+    ),
+    
+    # Fazemos o mesmo para Renda, caso ela venha como texto em algum momento
+    Renda_Numerica = as.numeric(as.character(Renda_Anualizada))
+  )
+```
+
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Mapa da Riqueza
+
+```{r}
+paleta <- colorNumeric(
+  palette = "YlGnBu", 
+  domain = dados_mapa$PIB_Numerico
+)
+
+# 2. Popup
+popup_html <- paste0(
+  "<strong>Estado: </strong>", dados_mapa$name_state, "<br>",
+  "<strong>Região: </strong>", dados_mapa$Regiao, "<br>",
+  "<hr>",
+  "<strong>PIB per Capita: </strong> R$ ", dados_mapa$PIB_per_Capita, "<br>",
+  "<strong>Renda Anual: </strong> R$ ", format(dados_mapa$Renda_Numerica, big.mark=".", decimal.mark=","), "<br>"
+)
+
+# 3. Renderização
+leaflet(dados_mapa) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  setView(lng = -50, lat = -15, zoom = 4) %>%
+  addPolygons(
+    fillColor = ~paleta(PIB_Numerico),
+    weight = 1,
+    opacity = 1,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.8,
+    highlight = highlightOptions(
+      weight = 3,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.9,
+      bringToFront = TRUE
+    ),
+    popup = popup_html
+  ) %>%
+  addLegend(
+    pal = paleta, 
+    values = ~PIB_Numerico, 
+    opacity = 0.7, 
+    title = "PIB per Capita (R$)",
+    position = "bottomright",
+    # CORREÇÃO AQUI: Removemos 'decimal.mark' que causava o erro.
+    # Usamos apenas 'big.mark' para separar milhares.
+    labFormat = labelFormat(big.mark = ".") 
+  )
+```
+
+
+Column {data-width=350}
+-----------------------------------------------------------------------
+```{r}
+df_economia %>%
+  # Seleciona apenas as colunas relevantes, removendo o Gap
+  select(Estado = UF, Regiao, PIB_pc = PIB_per_Capita, Renda_Anual = Renda_Anualizada) %>%
+  mutate(
+    # O PIB já vem formatado como texto do seu ETL? Se vier como número, arredonde aqui.
+    # Se vier como texto (32.000,00), o round vai dar erro, então assumimos que está pronto.
+    # Vou aplicar o round apenas na Renda que sabemos ser numérica.
+    Renda_Anual = round(Renda_Anual, 2)
+  ) %>%
+  datatable(
+    options = list(pageLength = 10, dom = 'tp'), 
+    rownames = FALSE
+  )
+```
+
+### Chart B
+
+```{r}
+
+```
+
+### Chart C
+
+```{r}
+
+```
+

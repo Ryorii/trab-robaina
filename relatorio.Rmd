@@ -630,7 +630,14 @@ library(dplyr)
 
 # 1. Baixar dados (PNAD - Rendimento Domiciliar per Capita - Último ano)
 url_pnad <- "https://apisidra.ibge.gov.br/values/t/5436/n3/all/v/5932/p/last?formato=json"
+<<<<<<< Updated upstream
 response <- GET(url_pnad, config(ssl_verifypeer = FALSE), timeout(20))
+=======
+response <- GET(
+  url_pnad, 
+  httr::config(ssl_verifypeer = FALSE), 
+  timeout(20))
+>>>>>>> Stashed changes
 raw_pnad <- fromJSON(content(response, "text", encoding = "UTF-8"))
 
 # 2. Tratamento Corrigido
@@ -652,8 +659,11 @@ print(head(df_renda))
 ```
 
 ```{r}
+<<<<<<< Updated upstream
 library(dplyr)
 
+=======
+>>>>>>> Stashed changes
 # 1. Preparação da Tabela de Renda (Seleção segura)
 df_renda_clean <- df_renda %>%
   select(COD_UF, Renda_Domiciliar, matches("Ano|Trimestre"))
@@ -678,13 +688,23 @@ df_consolidado <- df_final %>%
     Regiao,
     Populacao,
     PIB_per_Capita,
+<<<<<<< Updated upstream
     Renda_Domiciliar,
+=======
+    Renda_Anualizada,
+>>>>>>> Stashed changes
     Periodo_Renda = matches("Ano|Trimestre"),
   ) %>%
   arrange(desc(PIB_per_Capita))
 
 # 3. Verificação
 print(head(df_consolidado))
+<<<<<<< Updated upstream
+=======
+
+# Salvamento: 
+saveRDS(df_consolidado, file = "app_para_publicar/dados_economicos_estados.rds")
+>>>>>>> Stashed changes
 ```
 
 

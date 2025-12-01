@@ -1,7 +1,4 @@
-# ==============================================================================
-# SCRIPT FINAL: APLICAÇÃO SHINY (PARA PUBLICAÇÃO)
-# Corrigido para evitar conflitos de JavaScript usando um iframe.
-# ==============================================================================
+
 
 library(shiny)
 library(dplyr)
@@ -12,14 +9,12 @@ PESOS_OTIMOS_GLOBAIS <- readRDS("pesos_otimizados.rds")
 PRECOS_ATUAIS_GLOBAIS <- readRDS("precos_atuais.rds")
 
 
-# ==============================================================================
-# CONSTRUÇÃO DA INTERFACE MULTI-PÁGINA (UI) - Versão Corrigida
-# ==============================================================================
+
 ui <- navbarPage(
-  title = "Sistema de Investimentos",
+  title = "Montagem de carteira",
   
   # --- PÁGINA 1: DASHBOARD (HOMEPAGE) ---
-  tabPanel("Mapa Econômico",
+  tabPanel("Dashboard",
            # O iframe carrega o arquivo estático que está na pasta 'www'
            tags$iframe(
              src = "dashboard.html", 
@@ -28,7 +23,7 @@ ui <- navbarPage(
   ),
 
 
-  tabPanel("Análise de Mercado",
+  tabPanel("Relatório",
            # O iframe isola o HTML, prevenindo conflitos de JavaScript.
            # O arquivo relatorio.html deve estar em uma subpasta chamada 'www'.
            tags$iframe(style="height:1600px; width:100%; border:none;", 

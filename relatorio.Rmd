@@ -443,7 +443,7 @@ nomes_benchmark_20 <- setdiff(colnames(df_retornos), "date")
 
 # DF do Backtest
 df_retornos_backtest <- df_retornos %>%
-  filter(date >= as.Date("2022-01-01") & date <= as.Date("2025-09-30"))
+  filter(date >= as.Date("2022-01-01") & date <= as.Date("2025-11-20"))
 # Retorno da carteira otimizada
 retornos_otimizada <- as.matrix(df_retornos_backtest[, nomes_otimizados]) %*% pesos_otimizados
 # Retornos da carteira genérica

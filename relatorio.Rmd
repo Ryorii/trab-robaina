@@ -104,6 +104,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r libs, include=FALSE}
 library(tidyquant)
 library(dplyr)
+library(tidyverse)
+library(patchwork)
 library(httr)
 library(tidyr)
 library(jsonlite)
@@ -117,6 +119,12 @@ library(PortfolioAnalytics)
 library(xts)
 library(sidrar)
 library(scales)
+library(randomForest)
+library(zoo)
+library(timetk)
+library(slider)
+library(TTR)
+library(caret)
 ```
 
 #### Definindo o Universo de Ativos e o Período de Análise
@@ -322,7 +330,90 @@ print(head(df_retornos))
 ```
 ## Seleção de ativos e montagem da carteira {#fase-3}
 
-Para montar a carteira do investidor, primeiramente eliminaremos os ativos com os piores Índices de Sharpe. Como o CDI é a taxa livre de risco, não será possível calcular o Sharpe do mesmo e iremos incluí-lo como padrão, uma vez que a carteira ideal é aquela que equilibra investimentos de risco com o ativo livre de risco. Nesta primeira etapa plotaremos o gráfico dos Índices de Sharpe, os 15 ativos com os piores Sharpes serão eliminados para a próxima etapa.
+Para montar a carteira do investidor, primeiramente calcularemos RSI e as bandas de Bollinger dos ativos para nortear nossa análise.
+
+```{r analise_tecnica_separada, message=FALSE, warning=FALSE, fig.width=10, fig.height=18}
+library(tidyquant)
+library(tidyverse)
+
+# 1. Unificação e Preparação dos Dados (Mantendo a lógica correta de transformação)
+df_precos_total <- full_join(df_precos_rv, df_precos_btc, by = "date") %>%
+  pivot_longer(
+    cols = -date, 
+    names_to = "symbol", 
+    values_to = "price"
+  ) %>%
+  filter(!is.na(price)) %>%
+  arrange(date)
+
+# 2. Cálculo dos Indicadores
+dados_indicadores <- df_precos_total %>%
+  group_by(symbol) %>%
+  tq_mutate(select     = price, 
+            mutate_fun = BBands, 
+            n          = 20, 
+            sd         = 2, 
+            col_rename = c("bb_dn", "bb_mavg", "bb_up", "bb_pct")) %>%
+  tq_mutate(select     = price, 
+            mutate_fun = RSI, 
+            n          = 14, 
+            col_rename = "rsi") %>%
+  ungroup() %>%
+  na.omit()
+
+dados_acoes <- dados_indicadores %>% filter(symbol != "BTC")
+dados_btc   <- dados_indicadores %>% filter(symbol == "BTC")
+
+
+data_maxima <- max(dados_indicadores$date)
+dados_zoom  <- dados_indicadores %>%
+  filter(date >= (data_maxima - 90))
+
+# 3. Visualização (Todos juntos, com scales = "free_y")
+
+# Gráfico A: Bandas de Bollinger (Zoom 3 meses)
+g_bollinger <- dados_zoom %>%
+  ggplot(aes(x = date, y = price, group = symbol)) +
+  # Banda (sombra)
+  geom_ribbon(aes(ymin = bb_dn, ymax = bb_up), fill = "steelblue", alpha = 0.2) +
+  # Médias e Preço
+  geom_line(aes(y = bb_mavg), color = "orange", linetype = "dashed", size = 0.3) +
+  geom_line(color = "black", size = 0.5) +
+  facet_wrap(~symbol, scales = "free_y", ncol = 3) +
+  theme_tq() +
+  labs(title = "Bollinger Bands (Interativo)", y = "Preço", x = NULL)
+
+p1 <- ggplotly(g_bollinger, dynamicTicks = TRUE) %>%
+  layout(title = list(text = "Bandas de Bollinger (Zoom Inicial: 90 dias)"))
+p1
+
+
+```
+As bandas de Bollinger são calculadas com base na volatilidade recente do ativo, note que existe um aumento das bandas (aréa pintada) no gráfico da maioria dos ativos, oque um aumento da volatilidade recente. Adicionalmente os resultados acabam sendo pouco conclusivos, com a maioria dos ativos dentro das bandas, apenas o BTC e S&P estão sobre ou abaixo da banda inferior, oque pode indicar que estes ativos estão sobrevendidos (podem se valorizar no futuro próximo).
+
+Agora vamos calcular o RSI para checar se os indicadores de força estão coerente com nossas bandas de Bollinger.
+```{r RSI, message=FALSE, warning=FALSE, fig.width=10, fig.height=14}
+g_rsi <- dados_zoom %>%
+  ggplot(aes(x = date, y = rsi, group = symbol)) +
+  geom_line(color = "#8e44ad", size = 0.5) +
+  geom_hline(yintercept = c(30, 70), linetype = "dotted", color = "red") +
+  # Regiões coloridas (usando rect para o fundo)
+  annotate("rect", xmin = min(dados_zoom$date), xmax = max(dados_zoom$date), 
+           ymin = 30, ymax = 70, alpha = 0.1, fill = "gray50") +
+  facet_wrap(~symbol, ncol = 3) +
+  theme_tq() +
+  labs(title = "RSI (Interativo)", y = "RSI", x = "Data")
+
+p2 <- ggplotly(g_rsi, dynamicTicks = TRUE) %>%
+  layout(title = list(text = "Índice de Força Relativa (RSI)"))
+p2
+```
+O RSI é um indicador de Momentum, dessa a forma, se a linha roxa cruza o limite superior indica que o movimento de alto está forte demais, oque pode indicar sobre compra, e se cruza o limite inferior indica sobre-venda.
+Note que o BTC é o único ativo que o RSI indica compra conclusão que está em linha com oque descobrimos através das bandas de Bollinger, além disso. Além disso, ELET3 se encontra acima do limite superior, oque acende um sinal vermelho sobre seu preço.
+O BTC ser o único ativo indicando compra enquanto as maioria das ações se encontra dentro das bandas porém mais próximas dos limite superior, pode significar um momento de relativa euforia generalizada no mercado de ações.
+
+
+Tomaremos a decisão final pelo índice de Sharpe, eliminaremos os ativos com os piores Índices de Sharpe. Como o CDI é a taxa livre de risco, não será possível calcular o Sharpe do mesmo e iremos incluí-lo como padrão, uma vez que a carteira ideal é aquela que equilibra investimentos de risco com o ativo livre de risco. Nesta primeira etapa plotaremos o gráfico dos Índices de Sharpe, os 15 ativos com os piores Sharpes serão eliminados para a próxima etapa.
 
 #### Índice de Sharpe
 ```{r}
@@ -362,7 +453,8 @@ colunas_mant <- c("date", top_4_ativos, "CDI")
 
 # Filtrando o dataframe
 df_top_sharpe <- df_log_retornos %>%
-  select(all_of(colunas_mant))
+  select(all_of(colunas_mant))%>%
+  na.omit()
 
 head(df_top_sharpe)
 
@@ -385,8 +477,117 @@ grafico_interativo_log <- ggplotly(grafico_estatico_log, tooltip = "text") %>%
   layout(showlegend = FALSE)
 
 grafico_interativo_log
+
 ```
+Agora usaremos os 4 ativos com maior Sharpe como base para nossa carteira.
+
+A fim checar nosso resultado, usaremos um modelo de Random Forest para tentar prever qual ação tem a maior expectativa de retorno.
+```{r}
+set.seed(3009)
+
+dados_raw <- df_precos_total %>% drop_na()
+
+colunas <- names(dados_raw)
+col_ticker <- colunas[grepl("symbol|ticker|acao|code", tolower(colunas))][1]
+col_preco  <- colunas[grepl("close|price|fechamento|adjust", tolower(colunas))][1]
+col_data   <- colunas[grepl("date|data", tolower(colunas))][1]
+
+if (!is.na(col_ticker) && !is.na(col_preco)) {
+  dados_wide <- dados_raw %>%
+    select(all_of(c(col_data, col_ticker, col_preco))) %>%
+    mutate(across(all_of(col_preco), as.numeric)) %>%
+    distinct(across(all_of(c(col_data, col_ticker))), .keep_all = TRUE) %>%
+    pivot_wider(names_from = all_of(col_ticker), values_from = all_of(col_preco)) %>%
+    arrange(across(all_of(col_data))) %>%
+    drop_na()
+} else {
+  dados_wide <- dados_raw
+}
+
+if (!is.na(col_data)) {
+  dados_num <- dados_wide %>% select(-all_of(col_data))
+} else {
+  dados_num <- dados_wide
+}
+
+dados_num <- dados_num %>% select(where(is.numeric))
+
+
+retornos <- dados_num %>% 
+  mutate(across(everything(), ~ . / lag(.) - 1)) %>%
+  drop_na()
+
+df_features <- retornos %>% select()
+empresas <- colnames(retornos)
+
+if(length(empresas) < 2) stop("Erro: Poucas empresas para comparar.")
+
+for (emp in empresas) {
+  r <- retornos[[emp]]
+  df_features[[paste0(emp, "_ret_20d")]] <- rollapply(r, width=20, FUN=sum, align="right", fill=NA)
+  df_features[[paste0(emp, "_vol_10d")]] <- rollapply(r, width=10, FUN=sd, align="right", fill=NA)
+  df_features[[paste0(emp, "_mom_5d")]]  <- rollapply(r, width=5, FUN=sum, align="right", fill=NA)
+}
+
+ret_futuro <- retornos %>%
+  mutate(across(everything(), ~ lead(rollapply(., width=20, FUN=sum, align="left", fill=NA), 1)))
+
+linhas_validas <- complete.cases(ret_futuro) & complete.cases(df_features)
+df_features_ok <- df_features[linhas_validas, ]
+ret_futuro_ok  <- ret_futuro[linhas_validas, ]
+
+
+idx_melhor <- apply(ret_futuro_ok, 1, which.max)
+melhor_acao <- colnames(ret_futuro_ok)[idx_melhor]
+
+df_model <- df_features_ok
+df_model$Target <- as.factor(melhor_acao)
+
+
+split <- floor(0.8 * nrow(df_model))
+train <- df_model[1:split, ]
+test  <- df_model[(split + 1):nrow(df_model), ]
+
+rf <- randomForest(Target ~ ., data = train, ntree = 100, nodesize = 5)
+
+preds <- predict(rf, test)
+
+
+contagem <- sort(table(preds), decreasing = TRUE)
+
+top5 <- head(contagem, 5)
+
+df_grafico <- data.frame(
+  Acao = names(top5),
+  Sinalizacoes = as.numeric(top5) 
+)
+
+graf_sin <- ggplot(df_grafico, aes(x = reorder(Acao, -Sinalizacoes), y = Sinalizacoes)) +
+  geom_bar(stat = "identity", fill = "#4c72b0", width = 0.7) +
+  geom_text(aes(label = Sinalizacoes), vjust = -0.5, fontface = "bold") +
+  labs(
+    title = "Top 5 Ações Mais Sinalizadas via Machine Learning",
+    subtitle = "Frequência que a ação foi escolhida como a 'Melhor' no período de teste",
+    x = "Ação (Ticker)",
+    y = "Nº de Dias Sinalizados"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.x = element_text(face = "bold")
+  )
+
+p_graf_sin <- ggplotly(graf_sin)
+
+p_graf_sin
+
+```
+Note que BTC é de longe o ativo mais sinalizado pelo modelo, oque está em linha tanto com a nossa análise via Sharpe, quanto a com análise de feita via RSI e Bollinger.
+
+
 Agora encontraremos a carteira ótima, com os 4 ativos com o melhores Sharpes como mostra o gráfico acima + o CDI (taxa livre de risco). Definiremos um investimento Mínimo de 10% e máximo de 40% por ativo, para evitar exposição excessiva a ativos específicos.
+
+Note que os dois ativos que Bollinger indicou compra (BTC e IVVB11) se encontram no nosso pool de ativos escolhidos.
 
 #### Otimização de Markowitz e pesos ótimos
 ```{r}
@@ -430,6 +631,7 @@ carteira_otima_5_risco <- optimize.portfolio(R = retornos_xts_5,
                                              trace = FALSE)
 
 pesos_otimizados <- carteira_otima_5_risco$weights
+print(pesos_otimizados)
 
 ```
 ## Resultados e Publicação {#fase-4}
@@ -483,8 +685,121 @@ grafico_comparativo <- ggplot(df_desempenho_acumulado, aes(x = date, y = Valor_A
   theme(legend.position = "top")
 
 ggplotly(grafico_comparativo)
+
 ```
-O gráfico mostra que depois de um início um pouco mais fraco a carteira otimizada passou a apresentar retornos consideravelmente superiores que a carteira genérica
+O gráfico mostra que depois de um início um pouco mais fraco a carteira otimizada passou a apresentar retornos consideravelmente superiores que a carteira genérica.
+
+#### Simulação de Montecarlo
+
+Rodaremos uma simulação de Montecarlo para tentar entender como nossa carteira se comporta na simualação
+```{r}
+
+nomes_ativos_selecionados <- names(pesos_otimizados)
+
+pesos_vec <- as.numeric(pesos_otimizados)
+
+df_carteira <- df_log_retornos %>%
+  select(date, all_of(nomes_ativos_selecionados)) %>% 
+  arrange(date) %>%
+  na.omit() 
+
+df_carteira <- df_carteira[, c("date", nomes_ativos_selecionados)]
+
+
+precos_matrix <- as.matrix(df_carteira[, -1])
+
+if(ncol(precos_matrix) != length(pesos_otimizados)) {
+  stop("Erro: O número de colunas do DF não bate com o número de pesos.")
+}
+
+df_apenas_numeros <- df_carteira %>% 
+  select(where(is.numeric)) 
+
+precos_matrix <- as.matrix(df_apenas_numeros)
+
+print(class(precos_matrix[1,1]))
+
+retornos_matrix <- precos_matrix
+
+retornos_carteira <- retornos_matrix %*% pesos_vec
+head(retornos_carteira)
+
+mu <- mean(retornos_carteira)
+sigma <- sd(retornos_carteira)
+S0 <- last(precos_matrix %*% pesos_otimizados) 
+n_sim <- 1000
+dias <- 252
+
+set.seed(123)
+z_scores <- matrix(rnorm(n_sim * dias), nrow = dias, ncol = n_sim)
+simulacao_matrix <- matrix(NA, nrow = dias + 1, ncol = n_sim)
+simulacao_matrix[1, ] <- S0
+
+drift <- (mu - 0.5 * sigma^2)
+volatilidade <- sigma
+
+for (t in 2:(dias + 1)) {
+  simulacao_matrix[t, ] <- simulacao_matrix[t - 1, ] * exp(drift + volatilidade * z_scores[t - 1, ])
+}
+
+
+
+df_stats <- data.frame(
+  Dia = 0:(nrow(simulacao_matrix) - 1),
+  Media = rowMeans(simulacao_matrix),
+  Q05 = apply(simulacao_matrix, 1, quantile, probs = 0.05), # Cenário Pessimista
+  Q95 = apply(simulacao_matrix, 1, quantile, probs = 0.95)  # Cenário Otimista
+)
+
+# Para o fundo (spaghetti plot), pegamos apenas as primeiras 50 ou 100 simulações
+# para não deixar o gráfico pesado.
+df_fundo <- as.data.frame(simulacao_matrix[, 1:100]) %>% 
+  mutate(Dia = 0:(nrow(simulacao_matrix) - 1)) %>%
+  pivot_longer(cols = -Dia, names_to = "Simulacao", values_to = "Valor")
+
+# --- 2. Gerar o Gráfico Interativo ---
+
+fig <- plot_ly() %>%
+  # Camada 1: As linhas de fundo (amostra das simulações)
+  add_trace(data = df_fundo, x = ~Dia, y = ~Valor, split = ~Simulacao,
+            type = 'scatter', mode = 'lines',
+            line = list(color = 'rgba(0, 0, 255, 0.1)', width = 0.5), # Azul bem transparente
+            showlegend = FALSE, hoverinfo = "none") %>% # Sem tooltip no fundo para não poluir
+  
+  # Camada 2: A Média (Linha preta sólida)
+  add_trace(data = df_stats, x = ~Dia, y = ~Media,
+            type = 'scatter', mode = 'lines',
+            name = 'Média Esperada',
+            line = list(color = 'black', width = 3)) %>%
+  
+  # Camada 3: Limite Superior (Q95)
+  add_trace(data = df_stats, x = ~Dia, y = ~Q95,
+            type = 'scatter', mode = 'lines',
+            name = 'Cenário Otimista (95%)',
+            line = list(color = 'green', width = 2, dash = 'dash')) %>%
+  
+  # Camada 4: Limite Inferior (Q05)
+  add_trace(data = df_stats, x = ~Dia, y = ~Q05,
+            type = 'scatter', mode = 'lines',
+            name = 'Cenário Pessimista (5%)',
+            line = list(color = 'red', width = 2, dash = 'dash')) %>%
+  
+  # Layout
+  layout(title = "Simulação de Monte Carlo",
+         xaxis = list(title = "Dias Projetados"),
+         yaxis = list(title = "Log-retorno"),
+         hovermode = "x unified",
+    # Configuração explícita da legenda
+    legend = list(
+      x = 0,       # Posiciona um pouco fora da área de plotagem (direita)
+      y = -1,          # Alinha com o topo
+      orientation = "v" # 'v' para vertical (padrão) ou 'h' para horizontal
+    )
+  )
+
+fig
+```
+Note que a alta volatilidade do BTC e tendência de baixa recente, sujam as projeções da nossa carteira, reportando sempre valores devido ao peso alto do BTC. Uma possível solução é fazer uma análise mais complexa incoportando elementos de reversão a média. 
 
 Vamos agora criar um dataframe de preços para calcularmos o portfolio do investidor dado um valor a ser investido.
 
@@ -750,6 +1065,10 @@ saveRDS(df_consolidado, file = "app_para_publicar/dados_economicos_estados.rds")
 saveRDS(tabela_performance, "app_para_publicar/tabela_performance.rds")
 saveRDS(grafico_interativo_log, "app_para_publicar/grafico_interativo_log.rds")
 saveRDS(grafico_comparativo, "app_para_publicar/grafico_comparativo.rds")
+saveRDS(fig, "app_para_publicar/montecarlo.rds")
+saveRDS(p_graf_sin, "app_para_publicar/rand_forest.rds")
+
+
 
 ```
 

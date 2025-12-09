@@ -32,6 +32,9 @@ arquivo_dados <- "app_para_publicar/dados_economicos_estados.rds"
 df_economia <- readRDS(arquivo_dados)
 graf_sharpe <-readRDS("app_para_publicar/grafico_interativo_log.rds")
 graf_backtest <- readRDS( "app_para_publicar/grafico_comparativo.rds")
+
+montecarlo <- readRDS("app_para_publicar/montecarlo.rds")
+graf_rand <- readRDS("app_para_publicar/rand_forest.rds")
 ```
 
 ```{r}
@@ -99,6 +102,12 @@ Column {data-width=650}
 ggplotly(graf_sharpe)
 ```
 
+### Machine learning com Random forest para encontrar melhor ticker
+
+```{r}
+graf_rand
+```
+
 ### Risco x Retorno
 
 ```{r}
@@ -163,11 +172,7 @@ plot_ly() %>%
     hovermode = "closest"
   )
 ```
-### Portfólio Otimizado x Pesos iguais
 
-```{r}
-ggplotly(graf_backtest)
-```
 
 
 
@@ -190,52 +195,9 @@ formatar_dt(df_ativos)
 formatar_dt(df_carteiras)
 ```
 
-### Onde focar a estratégia de marketing para o serviço?
+### Simulação de Montecarlo
 
 ```{r}
-paleta <- colorNumeric(
-  palette = "YlGnBu", 
-  domain = dados_mapa$PIB_Numerico
-)
-
-# 2. Popup
-popup_html <- paste0(
-  "<strong>Estado: </strong>", dados_mapa$name_state, "<br>",
-  "<strong>Região: </strong>", dados_mapa$Regiao, "<br>",
-  "<hr>",
-  "<strong>PIB per Capita: </strong> R$ ", dados_mapa$PIB_per_Capita, "<br>",
-  "<strong>Renda Anual: </strong> R$ ", format(dados_mapa$Renda_Numerica, big.mark=".", decimal.mark=","), "<br>"
-)
-
-# 3. Renderização
-leaflet(dados_mapa) %>%
-  addProviderTiles(providers$CartoDB.Positron) %>% 
-  setView(lng = -50, lat = -15, zoom = 4) %>%
-  addPolygons(
-    fillColor = ~paleta(PIB_Numerico),
-    weight = 1,
-    opacity = 1,
-    color = "white",
-    dashArray = "3",
-    fillOpacity = 0.8,
-    highlight = highlightOptions(
-      weight = 3,
-      color = "#666",
-      dashArray = "",
-      fillOpacity = 0.9,
-      bringToFront = TRUE
-    ),
-    popup = popup_html
-  ) %>%
-  addLegend(
-    pal = paleta, 
-    values = ~PIB_Numerico, 
-    opacity = 0.7, 
-    title = "PIB per Capita (R$)",
-    position = "bottomright",
-    # CORREÇÃO AQUI: Removemos 'decimal.mark' que causava o erro.
-    # Usamos apenas 'big.mark' para separar milhares.
-    labFormat = labelFormat(big.mark = ".") 
-  )
+montecarlo
 ```
 

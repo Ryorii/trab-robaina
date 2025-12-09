@@ -557,12 +557,12 @@ contagem <- sort(table(preds), decreasing = TRUE)
 
 top5 <- head(contagem, 5)
 
-df_grafico <- data.frame(
+df_graf_rand <- data.frame(
   Acao = names(top5),
   Sinalizacoes = as.numeric(top5) 
 )
 
-graf_sin <- ggplot(df_grafico, aes(x = reorder(Acao, -Sinalizacoes), y = Sinalizacoes)) +
+graf_sin <- ggplot(df_graf_rand, aes(x = reorder(Acao, -Sinalizacoes), y = Sinalizacoes)) +
   geom_bar(stat = "identity", fill = "#4c72b0", width = 0.7) +
   geom_text(aes(label = Sinalizacoes), vjust = -0.5, fontface = "bold") +
   labs(
@@ -753,20 +753,16 @@ df_stats <- data.frame(
 
 # Para o fundo (spaghetti plot), pegamos apenas as primeiras 50 ou 100 simulações
 # para não deixar o gráfico pesado.
-df_fundo <- as.data.frame(simulacao_matrix[, 1:100]) %>% 
+df_fundo <- as.data.frame(simulacao_matrix[, 1:50]) %>% 
   mutate(Dia = 0:(nrow(simulacao_matrix) - 1)) %>%
   pivot_longer(cols = -Dia, names_to = "Simulacao", values_to = "Valor")
 
-# --- 2. Gerar o Gráfico Interativo ---
-
-fig <- plot_ly() %>%
-  # Camada 1: As linhas de fundo (amostra das simulações)
+plot_ly() %>%
   add_trace(data = df_fundo, x = ~Dia, y = ~Valor, split = ~Simulacao,
             type = 'scatter', mode = 'lines',
-            line = list(color = 'rgba(0, 0, 255, 0.1)', width = 0.5), # Azul bem transparente
-            showlegend = FALSE, hoverinfo = "none") %>% # Sem tooltip no fundo para não poluir
+            line = list(color = 'rgba(0, 0, 255, 0.1)', width = 0.5), 
+            showlegend = FALSE, hoverinfo = "none") %>% 
   
-  # Camada 2: A Média (Linha preta sólida)
   add_trace(data = df_stats, x = ~Dia, y = ~Media,
             type = 'scatter', mode = 'lines',
             name = 'Média Esperada',
@@ -796,8 +792,6 @@ fig <- plot_ly() %>%
       orientation = "v" # 'v' para vertical (padrão) ou 'h' para horizontal
     )
   )
-
-fig
 ```
 Note que a alta volatilidade do BTC e tendência de baixa recente, sujam as projeções da nossa carteira, reportando sempre valores devido ao peso alto do BTC. Uma possível solução é fazer uma análise mais complexa incoportando elementos de reversão a média. 
 
@@ -1064,9 +1058,10 @@ saveRDS(precos_atuais_df, file = "app_para_publicar/precos_atuais.rds")
 saveRDS(df_consolidado, file = "app_para_publicar/dados_economicos_estados.rds")
 saveRDS(tabela_performance, "app_para_publicar/tabela_performance.rds")
 saveRDS(grafico_interativo_log, "app_para_publicar/grafico_interativo_log.rds")
-saveRDS(grafico_comparativo, "app_para_publicar/grafico_comparativo.rds")
-saveRDS(fig, "app_para_publicar/montecarlo.rds")
-saveRDS(p_graf_sin, "app_para_publicar/rand_forest.rds")
+#saveRDS(grafico_comparativo, "app_para_publicar/grafico_comparativo.rds")
+saveRDS(df_fundo, "app_para_publicar/montecarlo.rds")
+saveRDS(df_stats, "app_para_publicar/df_stats.rds")
+saveRDS(df_graf_rand, "app_para_publicar/rand_forest.rds")
 
 
 
